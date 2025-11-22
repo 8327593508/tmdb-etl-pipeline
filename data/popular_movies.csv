@@ -1,8 +1,1 @@
-id
-title
-vote_average
-vote_count
-popularity
-release_date
-original_language
-last_updated
+id,title,vote_average,vote_count,popularity,release_date,original_language,last_updated
