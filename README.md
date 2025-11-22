@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # TMDB ETL Pipeline
 
 Complete ETL pipeline for The Movie Database (TMDB).
@@ -23,3 +24,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 python -m src.main
 ```
+=======
+# tmdb-etl-pipeline
+etl pipelining
+>>>>>>> 193402aecd29ca36ae38300315fbf2cb4da2822d
