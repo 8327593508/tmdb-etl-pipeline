@@ -84,19 +84,29 @@ def upsert_movie_credits(df_credits):
         logger.warning("No credits")
         return
 
-    logger.info(f"Loading {len(df_credits)} credits")
+    logger.info(f"Loading {len(df_credits)} movie credits")
     engine = get_engine()
 
     with engine.begin() as conn:
         for _, row in df_credits.iterrows():
+            data = clean_row(row.to_dict())
+
             conn.execute(
                 text('''
-                    INSERT INTO movie_credits (movie_id, movie_cast, movie_crew, last_updated)
-                    VALUES (:movie_id, :movie_cast::jsonb, :movie_crew::jsonb, NOW())
+                    INSERT INTO movie_credits
+                    (movie_id, movie_cast, movie_crew, last_updated)
+                    VALUES (
+                        :movie_id,
+                        CAST(:movie_cast AS jsonb),
+                        CAST(:movie_crew AS jsonb),
+                        NOW()
+                    )
                     ON CONFLICT (movie_id) DO UPDATE
                     SET movie_cast = EXCLUDED.movie_cast,
                         movie_crew = EXCLUDED.movie_crew,
                         last_updated = NOW();
                 '''),
-                row.to_dict()
+                data
             )
+
+
