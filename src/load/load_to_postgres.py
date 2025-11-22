@@ -1,3 +1,4 @@
+import json
 from sqlalchemy import text
 import pandas as pd
 from src.utils.db_engine import get_engine
