@@ -43,6 +43,7 @@ def upsert_movie_details(df_details):
         for _, row in df_details.iterrows():
             data = row.to_dict()
 
+            # Convert NaN to None
             for key in data:
                 if pd.isna(data[key]):
                     data[key] = None
@@ -53,17 +54,23 @@ def upsert_movie_details(df_details):
                     (id, title, overview, release_date, popularity, vote_count, vote_average, poster_path, backdrop_path,
                      original_language, genres, runtime, budget, revenue, homepage, tagline, status, imdb_id,
                      production_companies, production_countries, spoken_languages, last_updated)
-                    VALUES (:id, :title, :overview, :release_date, :popularity, :vote_count, :vote_average,
-                            :poster_path, :backdrop_path, :original_language, :genres::jsonb, :runtime,
-                            :budget, :revenue, :homepage, :tagline, :status, :imdb_id,
-                            :production_companies::jsonb, :production_countries::jsonb, :spoken_languages::jsonb,
-                            NOW())
+                    VALUES (
+                        :id, :title, :overview, :release_date, :popularity, :vote_count, :vote_average,
+                        :poster_path, :backdrop_path, :original_language,
+                        CAST(:genres AS jsonb), :runtime, :budget, :revenue, :homepage,
+                        :tagline, :status, :imdb_id,
+                        CAST(:production_companies AS jsonb),
+                        CAST(:production_countries AS jsonb),
+                        CAST(:spoken_languages AS jsonb),
+                        NOW()
+                    )
                     ON CONFLICT (id) DO UPDATE
                     SET overview = EXCLUDED.overview,
                         last_updated = NOW();
                 '''),
                 data
             )
+
 
 
 def upsert_movie_credits(df_credits):
