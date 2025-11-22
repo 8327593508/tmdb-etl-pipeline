@@ -1,70 +1,81 @@
-name: Daily TMDB Multi-File ETL
+name: Daily TMDB ETL
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 4 * * *"
+  workflow_dispatch:
 
 jobs:
-  etl:
+  run-etl:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+
+      # -----------------------------
+      # 1. Checkout repository
+      # -----------------------------
+      - name: Checkout repo
         uses: actions/checkout@v4
 
-      - name: Create .env file
+      # -----------------------------
+      # 2. Create .env file
+      # -----------------------------
+      - name: Create .env from secrets
         run: |
           cat > .env <<EOF
           TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
           PG_USER=${{ secrets.PG_USER }}
           PG_PASSWORD=${{ secrets.PG_PASSWORD }}
           PG_DB=${{ secrets.PG_DB }}
-          PG_HOST=postgres
           PG_PORT=5432
+          PG_HOST=postgres
           MAX_PAGES=${{ secrets.MAX_PAGES }}
           SCHEDULE=0
           EOF
-          echo "ENV file created"
-          cat .env
-      - name: Build Docker images
-        run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Start services
-        run: docker compose -f docker-compose.ci.yml up -d
+      # -----------------------------
+      # 3. Start Postgres only
+      # -----------------------------
+      - name: Start Postgres
+        run: docker compose -f docker-compose.ci.yml up -d postgres
 
-      - name: Wait for database
-        run: |
-          echo "Waiting for PostgreSQL to be healthy..."
-          for i in {1..20}; do
-            if docker exec tmdb_pipeline_postgres pg_isready -U ${{ secrets.PG_USER }}; then
-              echo "PostgreSQL is ready!"
-              exit 0
-            fi
-            echo "Not ready yet... ($i/20)"
-            sleep 3
-          done
-          echo "PostgreSQL did NOT become ready!"
-          exit 1
+      # -----------------------------
+      # 4. Run ETL App (one-time)
+      # -----------------------------
       - name: Run ETL
         env:
           GITHUB_ACTIONS: "true"
         run: docker compose -f docker-compose.ci.yml run --rm app
 
+      # -----------------------------
+      # 5. Export CSVs from Postgres
+      # -----------------------------
       - name: Export CSV files
         run: |
+          echo "Cleaning old data folder"
+          rm -rf data
           mkdir -p data
+
+          echo "Finding Postgres container..."
           PG_CONTAINER=$(docker ps --filter "name=tmdb_pipeline_postgres" --format "{{.ID}}")
-          echo "Exporting CSVs in container..."
-          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER"
-          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER"
-          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER"
-          echo "Copying CSVs to repo..."
+          echo "Postgres container ID = $PG_CONTAINER"
+
+          echo "Running COPY commands..."
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER;"
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER;"
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER;"
+
+          echo "Copying CSV files to repo..."
           docker cp "$PG_CONTAINER":/tmp/popular_movies.csv data/popular_movies.csv
           docker cp "$PG_CONTAINER":/tmp/movie_details.csv data/movie_details.csv
           docker cp "$PG_CONTAINER":/tmp/movie_credits.csv data/movie_credits.csv
-          echo "Final CSV list:"
+
+          echo "Final CSV file list:"
           ls -lh data/
+
+      # -----------------------------
+      # 6. Commit CSVs to GitHub
+      # -----------------------------
       - name: Commit updated CSVs
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
@@ -72,6 +83,9 @@ jobs:
           file_pattern: "data/*.csv"
           branch: main
 
-      - name: Cleanup
+      # -----------------------------
+      # 7. Cleanup
+      # -----------------------------
+      - name: Cleanup containers
         if: always()
         run: docker compose -f docker-compose.ci.yml down --volumes
