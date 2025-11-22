@@ -28,21 +28,21 @@ jobs:
       - name: Build images
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Start services
-        run: docker compose -f docker-compose.ci.yml up -d postgres && sleep 10
+      - name: Start PostgreSQL
+        run: docker compose -f docker-compose.ci.yml up -d postgres && sleep 12
 
+      # 🔥 IMPORTANT: run ETL using `up`, not `run --rm`
+      # This keeps the container alive so docker cp works
       - name: Run ETL
-        run: docker compose -f docker-compose.ci.yml run --rm app
+        run: docker compose -f docker-compose.ci.yml up app --exit-code-from app
 
-      # ✅ FIXED CSV EXPORT SECTION
+      # 🔥 FIXED EXPORT SECTION (copy from running ETL container)
       - name: Export CSVs
         run: |
           mkdir -p data
-          APP_CONTAINER=$(docker compose -f docker-compose.ci.yml ps -q app)
-
-          docker cp $APP_CONTAINER:/app/data/popular_movies.csv data/popular_movies.csv || true
-          docker cp $APP_CONTAINER:/app/data/movie_details.csv data/movie_details.csv || true
-          docker cp $APP_CONTAINER:/app/data/movie_credits.csv data/movie_credits.csv || true
+          docker cp tmdb_pipeline_app:/app/data/popular_movies.csv data/popular_movies.csv || true
+          docker cp tmdb_pipeline_app:/app/data/movie_details.csv data/movie_details.csv || true
+          docker cp tmdb_pipeline_app:/app/data/movie_credits.csv data/movie_credits.csv || true
 
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
