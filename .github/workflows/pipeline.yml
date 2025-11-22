@@ -37,7 +37,10 @@ jobs:
       - name: Run ETL container
         env:
           GITHUB_ACTIONS: "true"
-        run: docker compose -f docker-compose.ci.yml up --abort-on-container-exit
+        run: docker compose -f docker-compose.ci.yml up
+
+      - name: Wait for containers to be ready
+        run: sleep 5
 
       - name: Export CSV files from Postgres
         env:
