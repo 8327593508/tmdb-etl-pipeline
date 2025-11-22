@@ -1,4 +1,3 @@
-
 name: Daily TMDB Multi-File ETL
 
 on:
@@ -35,10 +34,38 @@ jobs:
       - name: Build Docker images (no cache)
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Run ETL container
+      - name: Start Docker containers (detached mode)
+        run: docker compose -f docker-compose.ci.yml up -d
+
+      - name: Wait for Postgres to be healthy
+        run: |
+          echo "Waiting for Postgres to be ready..."
+          for i in {1..30}; do
+            if docker exec imdb_pipeline_postgres pg_isready -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }}; then
+              echo "Postgres is ready!"
+              break
+            fi
+            echo "Attempt $i/30: Postgres not ready yet, waiting..."
+            sleep 5
+          done
+
+      - name: Run ETL pipeline
         env:
           GITHUB_ACTIONS: "true"
-        run: docker compose -f docker-compose.ci.yml up --abort-on-container-exit
+        run: |
+          echo "Running ETL pipeline..."
+          docker exec imdb_pipeline_app python -m src.main
+          
+          # Check exit code
+          EXIT_CODE=$?
+          if [ $EXIT_CODE -ne 0 ]; then
+            echo "ETL pipeline failed with exit code $EXIT_CODE"
+            exit $EXIT_CODE
+          fi
+          echo "ETL pipeline completed successfully"
+
+      - name: Wait a moment for data to settle
+        run: sleep 3
 
       - name: Export CSV files from Postgres
         env:
@@ -49,7 +76,7 @@ jobs:
           echo "Containers running:"
           docker ps -a
 
-          # Use container name directly instead of filtering
+          # Use container name directly
           PG_CONTAINER="imdb_pipeline_postgres"
           
           # Verify container exists and is running
@@ -64,16 +91,34 @@ jobs:
 
           # Export with proper error handling
           echo "Exporting popular_movies..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv || echo "Warning: popular_movies export failed or table empty"
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv
+          
+          if [ -s data/popular_movies.csv ]; then
+            echo "✓ popular_movies.csv created ($(wc -l < data/popular_movies.csv) lines)"
+          else
+            echo "✗ popular_movies.csv is empty or failed"
+          fi
 
           echo "Exporting movie_details..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv || echo "Warning: movie_details export failed or table empty"
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv
+          
+          if [ -s data/movie_details.csv ]; then
+            echo "✓ movie_details.csv created ($(wc -l < data/movie_details.csv) lines)"
+          else
+            echo "✗ movie_details.csv is empty or failed"
+          fi
 
           echo "Exporting movie_credits..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv || echo "Warning: movie_credits export failed or table empty"
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv
+          
+          if [ -s data/movie_credits.csv ]; then
+            echo "✓ movie_credits.csv created ($(wc -l < data/movie_credits.csv) lines)"
+          else
+            echo "✗ movie_credits.csv is empty or failed"
+          fi
 
-          echo "CSV files created:"
-          ls -lh data/ || echo "No data directory"
+          echo "All CSV files created:"
+          ls -lh data/
 
       - name: Commit updated CSVs
         uses: stefanzweifel/git-auto-commit-action@v4
