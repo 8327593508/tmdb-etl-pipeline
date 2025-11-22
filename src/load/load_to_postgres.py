@@ -114,29 +114,39 @@ def upsert_movie_credits(df_credits):
         logger.warning("No credits")
         return
 
-    logger.info(f"Loading {len(df_credits)} credits")
+    logger.info(f"Loading {len(df_credits)} movie credits")
     engine = get_engine()
 
     with engine.begin() as conn:
         for _, row in df_credits.iterrows():
+
+            # Clean row (convert lists/dicts → json, NaN → None)
             data = clean_row(row.to_dict())
 
-            conn.execute(
-                text('''
-                    INSERT INTO movie_credits
-                    (movie_id, movie_cast, movie_crew, last_updated)
-                    VALUES (
-                        :movie_id,
-                        CAST(:movie_cast AS jsonb),
-                        CAST(:movie_crew AS jsonb),
-                        NOW()
-                    )
-                    ON CONFLICT (movie_id) DO UPDATE
-                    SET movie_cast = EXCLUDED.movie_cast,
-                        movie_crew = EXCLUDED.movie_crew,
-                        last_updated = NOW();
-                '''),
-                data
-            )
+            try:
+                conn.execute(
+                    text('''
+                        INSERT INTO movie_credits
+                        (movie_id, movie_cast, movie_crew, last_updated)
+                        VALUES (
+                            :movie_id,
+                            CAST(:movie_cast AS jsonb),
+                            CAST(:movie_crew AS jsonb),
+                            NOW()
+                        )
+                        ON CONFLICT (movie_id) DO UPDATE
+                        SET movie_cast = EXCLUDED.movie_cast,
+                            movie_crew = EXCLUDED.movie_crew,
+                            last_updated = NOW();
+                    '''),
+                    data
+                )
+
+            except Exception as e:
+                # 🔥 DEBUG LOGGING — shows exactly what failed
+                logger.error("❌ FAILED MOVIE CREDIT ROW:")
+                logger.error(json.dumps(data, indent=2))
+                logger.error(f"❌ ERROR MESSAGE: {e}")
+                raise  # rethrow to stop pipeline
 
     logger.info(f"Successfully inserted {len(df_credits)} movie credits")
