@@ -34,98 +34,65 @@ jobs:
       - name: Build Docker images (no cache)
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Start Docker containers (detached mode)
-        run: docker compose -f docker-compose.ci.yml up -d
-
-      - name: Wait for Postgres to be healthy
-        run: |
-          echo "Waiting for Postgres to be ready..."
-          for i in {1..30}; do
-            if docker exec tmdb_pipeline_postgres pg_isready -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }}; then
-              echo "Postgres is ready!"
-              break
-            fi
-            echo "Attempt $i/30: Postgres not ready yet, waiting..."
-            sleep 5
-          done
-
-      - name: Run ETL pipeline
+      - name: Run ETL container
         env:
           GITHUB_ACTIONS: "true"
-        run: |
-          echo "Running ETL pipeline..."
-          docker exec tmdb_pipeline_app python -m src.main
-          
-          # Check exit code
-          EXIT_CODE=$?
-          if [ $EXIT_CODE -ne 0 ]; then
-            echo "ETL pipeline failed with exit code $EXIT_CODE"
-            exit $EXIT_CODE
-          fi
-          echo "ETL pipeline completed successfully"
-
-      - name: Wait a moment for data to settle
-        run: sleep 3
+        run: docker compose -f docker-compose.ci.yml up --abort-on-container-exit
 
       - name: Export CSV files from Postgres
         env:
           PG_USER: ${{ secrets.PG_USER }}
-          PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
           PG_DB: ${{ secrets.PG_DB }}
         run: |
-          echo "Containers running:"
+          echo "Containers:"
           docker ps -a
 
-          # Use container name directly
-          PG_CONTAINER="tmdb_pipeline_postgres"
-          
-          # Verify container exists and is running
-          if ! docker ps --filter "name=$PG_CONTAINER" --format "{{.Names}}" | grep -q "$PG_CONTAINER"; then
-            echo "ERROR: Postgres container not found or not running!"
+          PG_CONTAINER=$(docker ps -a --filter "name=tmdb_pipeline_postgres" --format "{{.ID}}" | head -n 1)
+          if [ -z "$PG_CONTAINER" ]; then
+            echo "Postgres container not found!"
             docker ps -a
             exit 1
           fi
-          
           echo "Using Postgres container: $PG_CONTAINER"
+
           mkdir -p data
 
-          # Export with proper error handling
           echo "Exporting popular_movies..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\\\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER;\""
           
-          if [ -s data/popular_movies.csv ]; then
-            echo "✓ popular_movies.csv created ($(wc -l < data/popular_movies.csv) lines)"
-          else
-            echo "✗ popular_movies.csv is empty or failed"
-          fi
-
           echo "Exporting movie_details..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\\\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER;\""
           
-          if [ -s data/movie_details.csv ]; then
-            echo "✓ movie_details.csv created ($(wc -l < data/movie_details.csv) lines)"
-          else
-            echo "✗ movie_details.csv is empty or failed"
-          fi
-
           echo "Exporting movie_credits..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv
-          
-          if [ -s data/movie_credits.csv ]; then
-            echo "✓ movie_credits.csv created ($(wc -l < data/movie_credits.csv) lines)"
-          else
-            echo "✗ movie_credits.csv is empty or failed"
-          fi
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\\\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER;\""
 
-          echo "All CSV files created:"
+          echo "CSV files exported from container, now copying to local data folder..."
+          
+          docker cp "$PG_CONTAINER":/tmp/popular_movies.csv data/popular_movies.csv
+          if [ $? -eq 0 ]; then echo "✓ popular_movies.csv copied"; else echo "✗ Failed to copy popular_movies.csv"; fi
+          
+          docker cp "$PG_CONTAINER":/tmp/movie_details.csv data/movie_details.csv
+          if [ $? -eq 0 ]; then echo "✓ movie_details.csv copied"; else echo "✗ Failed to copy movie_details.csv"; fi
+          
+          docker cp "$PG_CONTAINER":/tmp/movie_credits.csv data/movie_credits.csv
+          if [ $? -eq 0 ]; then echo "✓ movie_credits.csv copied"; else echo "✗ Failed to copy movie_credits.csv"; fi
+
+          echo "Checking if files exist in data folder:"
           ls -lh data/
+          
+          echo "File counts:"
+          echo "popular_movies.csv lines: $(wc -l < data/popular_movies.csv)"
+          echo "movie_details.csv lines: $(wc -l < data/movie_details.csv)"
+          echo "movie_credits.csv lines: $(wc -l < data/movie_credits.csv)"
 
       - name: Commit updated CSVs
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           file_pattern: data/*.csv
-          commit_message: "Update TMDB CSV files"
+          commit_message: "Update TMDB CSV files - $(date +'%Y-%m-%d %H:%M:%S')"
           branch: main
+          commit_options: '--no-verify'
+          skip_dirty_check: false
 
       - name: Tear down containers
         if: always()
