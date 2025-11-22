@@ -34,13 +34,15 @@ jobs:
       - name: Run ETL
         run: docker compose -f docker-compose.ci.yml run --rm app
 
+      # ✅ FIXED CSV EXPORT SECTION
       - name: Export CSVs
         run: |
           mkdir -p data
-          CONTAINER=$(docker compose -f docker-compose.ci.yml ps -q postgres)
-          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv || true
-          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv || true
-          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv || true
+          APP_CONTAINER=$(docker compose -f docker-compose.ci.yml ps -q app)
+
+          docker cp $APP_CONTAINER:/app/data/popular_movies.csv data/popular_movies.csv || true
+          docker cp $APP_CONTAINER:/app/data/movie_details.csv data/movie_details.csv || true
+          docker cp $APP_CONTAINER:/app/data/movie_credits.csv data/movie_credits.csv || true
 
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
