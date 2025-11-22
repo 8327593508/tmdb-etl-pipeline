@@ -23,6 +23,7 @@ jobs:
           PG_PORT=5432
           MAX_PAGES=${{ secrets.MAX_PAGES || 5 }}
           SCHEDULE=0
+          GITHUB_ACTIONS=true
           EOL
 
       - name: Build images
@@ -31,12 +32,14 @@ jobs:
       - name: Start PostgreSQL
         run: docker compose -f docker-compose.ci.yml up -d postgres && sleep 12
 
-      # 🔥 IMPORTANT: run ETL using `up`, not `run --rm`
-      # This keeps the container alive so docker cp works
-      - name: Run ETL
-        run: docker compose -f docker-compose.ci.yml up app --exit-code-from app
+      # ⭐ Keep container ALIVE so docker cp works
+      - name: Run ETL inside container
+        run: |
+          docker compose -f docker-compose.ci.yml up -d app
+          # Follow logs until ETL finishes
+          docker logs -f tmdb_pipeline_app
 
-      # 🔥 FIXED EXPORT SECTION (copy from running ETL container)
+      # ⭐ Copy generated CSVs FROM container → to GitHub runner
       - name: Export CSVs
         run: |
           mkdir -p data
@@ -44,6 +47,7 @@ jobs:
           docker cp tmdb_pipeline_app:/app/data/movie_details.csv data/movie_details.csv || true
           docker cp tmdb_pipeline_app:/app/data/movie_credits.csv data/movie_credits.csv || true
 
+      # ⭐ Auto-commit CSV changes back to repo
       - uses: stefanzweifel/git-auto-commit-action@v4
         with:
           file_pattern: "data/*.csv"
