@@ -1,0 +1,52 @@
+name: Daily TMDB ETL Pipeline
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 6 * * *"
+
+jobs:
+  etl:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create .env
+        run: |
+          cat > .env << EOL
+          TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
+          PG_USER=${{ secrets.PG_USER }}
+          PG_PASSWORD=${{ secrets.PG_PASSWORD }}
+          PG_DB=${{ secrets.PG_DB }}
+          PG_HOST=postgres
+          PG_PORT=5432
+          MAX_PAGES=${{ secrets.MAX_PAGES || 5 }}
+          SCHEDULE=0
+          EOL
+
+      - name: Build images
+        run: docker-compose -f docker-compose.ci.yml build --no-cache
+
+      - name: Start services
+        run: docker-compose -f docker-compose.ci.yml up -d postgres && sleep 10
+
+      - name: Run ETL
+        run: docker-compose -f docker-compose.ci.yml run --rm app
+
+      - name: Export CSVs
+        run: |
+          mkdir -p data
+          CONTAINER=$(docker-compose -f docker-compose.ci.yml ps -q postgres)
+          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv || true
+          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv || true
+          docker exec $CONTAINER psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv || true
+
+      - uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          file_pattern: "data/*.csv"
+          commit_message: "chore: Update TMDB CSV exports [skip ci]"
+
+      - name: Cleanup
+        if: always()
+        run: docker-compose -f docker-compose.ci.yml down -v

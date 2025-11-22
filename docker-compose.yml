@@ -1,0 +1,45 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:15
+    container_name: tmdb_postgres
+    environment:
+      POSTGRES_USER: ${PG_USER:-tmdb_user}
+      POSTGRES_PASSWORD: ${PG_PASSWORD:-tmdb_password}
+      POSTGRES_DB: ${PG_DB:-tmdb_db}
+    ports:
+      - "${PG_PORT:-5432}:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./sql/create_tables.sql:/docker-entrypoint-initdb.d/create_tables.sql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${PG_USER:-tmdb_user}"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
+
+  app:
+    container_name: tmdb_app
+    build:
+      context: .
+      dockerfile: docker/Dockerfile
+    environment:
+      TMDB_API_KEY: ${TMDB_API_KEY}
+      PG_USER: ${PG_USER:-tmdb_user}
+      PG_PASSWORD: ${PG_PASSWORD:-tmdb_password}
+      PG_DB: ${PG_DB:-tmdb_db}
+      PG_HOST: postgres
+      PG_PORT: 5432
+      MAX_PAGES: ${MAX_PAGES:-5}
+      SCHEDULE: ${SCHEDULE:-0}
+    volumes:
+      - ./data:/app/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  pgdata:
