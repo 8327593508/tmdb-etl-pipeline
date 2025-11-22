@@ -8,18 +8,23 @@ logger = get_logger("load_postgres")
 
 
 def clean_row(row_dict):
-    """Convert NaN → None and convert JSON fields to JSON strings."""
     clean = {}
 
     for key, value in row_dict.items():
-        # Convert NaN -> None
-        if pd.isna(value):
-            clean[key] = None
+
+        # If value is a list or dict, skip pd.isna() check
+        if isinstance(value, (list, dict)):
+            clean[key] = value
             continue
 
-        clean[key] = value
+        # Safe NaN check for scalars
+        if pd.isna(value):
+            clean[key] = None
+        else:
+            clean[key] = value
 
     return clean
+
 
 
 def json_or_none(value):
