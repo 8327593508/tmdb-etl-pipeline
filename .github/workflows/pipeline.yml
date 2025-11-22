@@ -10,16 +10,10 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      # -------------------------------
-      # 1. Checkout Code
-      # -------------------------------
-      - name: Checkout
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      # -------------------------------
-      # 2. Create .env file
-      # -------------------------------
-      - name: Create .env
+      - name: Create .env file
         run: |
           cat > .env <<EOF
           TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
@@ -31,70 +25,59 @@ jobs:
           MAX_PAGES=${{ secrets.MAX_PAGES }}
           SCHEDULE=0
           EOF
-      # -------------------------------
-      # 3. Build Docker Image
-      # -------------------------------
-      - name: Build images
+          echo "ENV file created"
+          cat .env
+
+      - name: Build Docker images
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      # -------------------------------
-      # 4. Start Postgres only first
-      # -------------------------------
-      - name: Start Postgres
-        run: docker compose -f docker-compose.ci.yml up -d postgres
+      - name: Start services
+        run: docker compose -f docker-compose.ci.yml up -d
 
-      # -------------------------------
-      # 5. Wait for Postgres to be ready
-      # -------------------------------
-      - name: Wait for Postgres
+      - name: Wait for database
         run: |
-          echo "Waiting for Postgres..."
-          for i in {1..30}; do
+          echo "Waiting for PostgreSQL to be healthy..."
+          for i in {1..20}; do
             if docker exec tmdb_pipeline_postgres pg_isready -U ${{ secrets.PG_USER }}; then
-              echo "Postgres is ready!"
+              echo "PostgreSQL is ready!"
               exit 0
             fi
-            echo "Postgres not ready yet... ($i)"
-            sleep 2
+            echo "Not ready yet... ($i/20)"
+            sleep 3
           done
-          echo "Postgres did not become ready in time!"
+          echo "PostgreSQL did NOT become ready!"
           exit 1
-      # -------------------------------
-      # 6. Run ETL container
-      # -------------------------------
+
       - name: Run ETL
-        run: |
-          echo "Running ETL..."
-          docker compose -f docker-compose.ci.yml run --rm app
-      # -------------------------------
-      # 7. Export CSVs from Postgres
-      # -------------------------------
+        env:
+          GITHUB_ACTIONS: "true"
+        run: docker compose -f docker-compose.ci.yml run --rm app
+
       - name: Export CSV files
         run: |
           mkdir -p data
-          PG_CONTAINER=tmdb_pipeline_postgres
-          PG_USER=${{ secrets.PG_USER }}
-          PG_DB=${{ secrets.PG_DB }}
-          echo "Exporting CSVs inside container..."
-          docker exec $PG_CONTAINER psql -U $PG_USER -d $PG_DB -c "\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER;"
-          docker exec $PG_CONTAINER psql -U $PG_USER -d $PG_DB -c "\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER;"
-          docker exec $PG_CONTAINER psql -U $PG_USER -d $PG_DB -c "\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER;"
-          echo "Copying CSVs to repo folder..."
-          docker cp $PG_CONTAINER:/tmp/popular_movies.csv data/popular_movies.csv
-          docker cp $PG_CONTAINER:/tmp/movie_details.csv data/movie_details.csv
-          docker cp $PG_CONTAINER:/tmp/movie_credits.csv data/movie_credits.csv
-          ls -lh data
-      # -------------------------------
-      # 8. Commit updated CSVs
-      # -------------------------------
-      - uses: stefanzweifel/git-auto-commit-action@v4
-        with:
-          file_pattern: data/*.csv
-          commit_message: "Update TMDB CSV exports"
+          PG_CONTAINER=$(docker ps --filter "name=tmdb_pipeline_postgres" --format "{{.ID}}")
 
-      # -------------------------------
-      # 9. Cleanup containers
-      # -------------------------------
+          echo "Exporting CSVs in container..."
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER"
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER"
+          docker exec "$PG_CONTAINER" psql -U ${{ secrets.PG_USER }} -d ${{ secrets.PG_DB }} -c "\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER"
+
+          echo "Copying CSVs to repo..."
+          docker cp "$PG_CONTAINER":/tmp/popular_movies.csv data/popular_movies.csv
+          docker cp "$PG_CONTAINER":/tmp/movie_details.csv data/movie_details.csv
+          docker cp "$PG_CONTAINER":/tmp/movie_credits.csv data/movie_credits.csv
+
+          echo "Final CSV list:"
+          ls -lh data/
+
+      - name: Commit updated CSVs
+        uses: stefanzweifel/git-auto-commit-action@v4
+        with:
+          commit_message: "Update TMDB CSV files"
+          file_pattern: data/*.csv
+          branch: main
+
       - name: Cleanup
         if: always()
-        run: docker compose -f docker-compose.ci.yml down -v
+        run: docker compose -f docker-compose.ci.yml down --volumes
