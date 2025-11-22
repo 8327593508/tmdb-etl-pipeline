@@ -80,7 +80,7 @@ jobs:
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
           commit_message: "Update TMDB CSV files"
-          file_pattern: "data/*.csv"
+          file_pattern: tmdb-etl-pipeline/data/popular_movies.csv
           branch: main
 
       # -----------------------------
