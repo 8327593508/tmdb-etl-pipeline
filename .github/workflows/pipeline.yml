@@ -3,16 +3,22 @@ name: Daily TMDB Multi-File ETL
 on:
   workflow_dispatch:
   schedule:
-    - cron: "0 6 * * *"
+    - cron: "0 6 * * *"   # Runs every day at 6:00 UTC
 
 jobs:
   etl:
     runs-on: ubuntu-latest
 
     steps:
+      # ---------------------------
+      # CHECKOUT REPO
+      # ---------------------------
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      # ---------------------------
+      # CREATE .env FILE
+      # ---------------------------
       - name: Create .env from secrets
         run: |
           cat > .env <<EOF
@@ -25,64 +31,72 @@ jobs:
           MAX_PAGES=${{ secrets.MAX_PAGES }}
           SCHEDULE=0
           EOF
+          echo "Generated .env:"
+          cat .env
 
-      - name: Build Docker images
+      # ---------------------------
+      # DOCKER INFO
+      # ---------------------------
+      - name: Show Docker Compose version
+        run: docker compose version
+
+      # ---------------------------
+      # BUILD DOCKER IMAGES
+      # ---------------------------
+      - name: Build Docker images (no cache)
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Start Postgres only
-        run: docker compose -f docker-compose.ci.yml up -d postgres
-
-      - name: Wait for Postgres to be ready
-        run: |
-          echo "Waiting for Postgres..."
-          for i in {1..30}; do
-            if docker logs tmdb_pipeline_postgres 2>&1 | grep -q "database system is ready"; then
-              echo "Postgres is ready!"
-              exit 0
-            fi
-            sleep 2
-          done
-          echo "Postgres did NOT start"
-          exit 1
-
+      # ---------------------------
+      # RUN PIPELINE
+      # ---------------------------
       - name: Run ETL container
         env:
           GITHUB_ACTIONS: "true"
-        run: docker compose -f docker-compose.ci.yml run --rm app
+        run: docker compose -f docker-compose.ci.yml up --abort-on-container-exit
 
-      - name: Export CSV files
+      # ---------------------------
+      # EXPORT CSV FILES
+      # ---------------------------
+      - name: Export CSV files from Postgres
         env:
           PG_USER: ${{ secrets.PG_USER }}
           PG_DB: ${{ secrets.PG_DB }}
         run: |
-          REPO_DIR="tmdb-etl-pipeline"
+          echo "Listing containers..."
+          docker ps -a
 
-          PG_CONTAINER=$(docker ps --filter "name=tmdb_pipeline_postgres" --format "{{.ID}}")
+          PG_CONTAINER=$(docker ps -a --filter "name=tmdb_pipeline_postgres" --format "{{.ID}}" | head -n 1)
+
           echo "Postgres container = $PG_CONTAINER"
 
-          # Ensure repo data folder exists
-          mkdir -p "$REPO_DIR/data"
+          mkdir -p data
 
-          echo "Exporting CSV from inside container..."
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER;"
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER;"
-          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER;"
+          echo "Exporting CSVs from Postgres..."
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\COPY popular_movies TO '/tmp/popular_movies.csv' CSV HEADER;\""
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\COPY movie_details TO '/tmp/movie_details.csv' CSV HEADER;\""
+          docker exec "$PG_CONTAINER" bash -c "psql -U \"$PG_USER\" -d \"$PG_DB\" -c \"\\COPY movie_credits TO '/tmp/movie_credits.csv' CSV HEADER;\""
 
-          echo "Copying CSV files to repo..."
-          docker cp "$PG_CONTAINER":/tmp/popular_movies.csv "$REPO_DIR/data/popular_movies.csv"
-          docker cp "$PG_CONTAINER":/tmp/movie_details.csv "$REPO_DIR/data/movie_details.csv"
-          docker cp "$PG_CONTAINER":/tmp/movie_credits.csv "$REPO_DIR/data/movie_credits.csv"
+          echo "Copying CSVs to repo..."
+          docker cp "$PG_CONTAINER":/tmp/popular_movies.csv data/popular_movies.csv
+          docker cp "$PG_CONTAINER":/tmp/movie_details.csv data/movie_details.csv
+          docker cp "$PG_CONTAINER":/tmp/movie_credits.csv data/movie_credits.csv
 
-          echo "Files in repo data folder:"
-          ls -lh "$REPO_DIR/data"
+          ls -lh data/
 
-      - name: Commit CSV updates
+      # ---------------------------
+      # COMMIT CSV FILES
+      # ---------------------------
+      - name: Commit updated CSVs
         uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          file_pattern: "tmdb-etl-pipeline/data/*.csv"
           commit_message: "Update TMDB CSV files"
+          file_pattern: data/*.csv
           branch: main
+          commit_options: '--no-verify'
 
-      - name: Cleanup
+      # ---------------------------
+      # CLEANUP
+      # ---------------------------
+      - name: Tear down containers
         if: always()
-        run: docker compose -f docker-compose.ci.yml down -v
+        run: docker compose -f docker-compose.ci.yml down --volumes
