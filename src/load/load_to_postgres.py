@@ -1,11 +1,40 @@
 import json
-from sqlalchemy import text
 import pandas as pd
+from sqlalchemy import text
 from src.utils.db_engine import get_engine
 from src.utils.logger import get_logger
 
 logger = get_logger("load_postgres")
 
+
+# -------------------------------------------------------------
+# CLEAN ROW FUNCTION (handles NaN, lists, dicts)
+# -------------------------------------------------------------
+def clean_row(data):
+    cleaned = {}
+
+    for key, value in data.items():
+
+        # Convert lists/dicts → JSON string
+        if isinstance(value, (list, dict)):
+            cleaned[key] = json.dumps(value)
+            continue
+
+        # Convert NaN → None
+        try:
+            if pd.isna(value):
+                cleaned[key] = None
+            else:
+                cleaned[key] = value
+        except Exception:
+            cleaned[key] = value
+
+    return cleaned
+
+
+# -------------------------------------------------------------
+# 1️⃣ UPSERT POPULAR MOVIES
+# -------------------------------------------------------------
 def upsert_movies(df_movies):
     if df_movies.empty:
         logger.warning("No movies")
@@ -19,8 +48,11 @@ def upsert_movies(df_movies):
             conn.execute(
                 text('''
                     INSERT INTO popular_movies
-                    (id, title, vote_average, vote_count, popularity, release_date, original_language, last_updated)
-                    VALUES (:id, :title, :vote_average, :vote_count, :popularity, :release_date, :original_language, NOW())
+                    (id, title, vote_average, vote_count, popularity, release_date,
+                     original_language, last_updated)
+                    VALUES
+                    (:id, :title, :vote_average, :vote_count, :popularity,
+                     :release_date, :original_language, NOW())
                     ON CONFLICT (id) DO UPDATE
                     SET title = EXCLUDED.title,
                         vote_average = EXCLUDED.vote_average,
@@ -32,6 +64,9 @@ def upsert_movies(df_movies):
             )
 
 
+# -------------------------------------------------------------
+# 2️⃣ UPSERT MOVIE DETAILS
+# -------------------------------------------------------------
 def upsert_movie_details(df_details):
     if df_details.empty:
         logger.warning("No details")
@@ -42,33 +77,26 @@ def upsert_movie_details(df_details):
 
     with engine.begin() as conn:
         for _, row in df_details.iterrows():
-            data = row.to_dict()
-
-            # SAFELY CLEAN DATA: handle lists/dicts & NaN correctly
-            for key, value in data.items():
-                # If list/dict → convert to JSON string
-                if isinstance(value, (list, dict)):
-                    data[key] = json.dumps(value)
-                    continue
-
-                # If scalar NaN → convert to None
-                if pd.isna(value):
-                    data[key] = None
+            data = clean_row(row.to_dict())
 
             conn.execute(
                 text('''
                     INSERT INTO movie_details
-                    (id, title, overview, release_date, popularity, vote_count, vote_average,
-                     poster_path, backdrop_path, original_language, genres, runtime, budget,
-                     revenue, homepage, tagline, status, imdb_id, production_companies,
-                     production_countries, spoken_languages, last_updated)
+                    (id, title, overview, release_date, popularity, vote_count,
+                     vote_average, poster_path, backdrop_path, original_language,
+                     genres, runtime, budget, revenue, homepage, tagline, status,
+                     imdb_id, production_companies, production_countries,
+                     spoken_languages, last_updated)
 
-                    VALUES (:id, :title, :overview, :release_date, :popularity, :vote_count,
-                            :vote_average, :poster_path, :backdrop_path, :original_language,
-                            CAST(:genres AS jsonb), :runtime, :budget, :revenue, :homepage,
-                            :tagline, :status, :imdb_id, CAST(:production_companies AS jsonb),
-                            CAST(:production_countries AS jsonb), CAST(:spoken_languages AS jsonb),
-                            NOW())
+                    VALUES (
+                        :id, :title, :overview, :release_date, :popularity,
+                        :vote_count, :vote_average, :poster_path, :backdrop_path,
+                        :original_language, CAST(:genres AS jsonb), :runtime,
+                        :budget, :revenue, :homepage, :tagline, :status,
+                        :imdb_id, CAST(:production_companies AS jsonb),
+                        CAST(:production_countries AS jsonb),
+                        CAST(:spoken_languages AS jsonb), NOW()
+                    )
 
                     ON CONFLICT (id) DO UPDATE
                     SET overview = EXCLUDED.overview,
@@ -78,13 +106,15 @@ def upsert_movie_details(df_details):
             )
 
 
-
+# -------------------------------------------------------------
+# 3️⃣ UPSERT MOVIE CREDITS
+# -------------------------------------------------------------
 def upsert_movie_credits(df_credits):
     if df_credits.empty:
         logger.warning("No credits")
         return
 
-    logger.info(f"Loading {len(df_credits)} movie credits")
+    logger.info(f"Loading {len(df_credits)} credits")
     engine = get_engine()
 
     with engine.begin() as conn:
@@ -109,4 +139,4 @@ def upsert_movie_credits(df_credits):
                 data
             )
 
-
+    logger.info(f"Successfully inserted {len(df_credits)} movie credits")
