@@ -109,44 +109,50 @@ def upsert_movie_details(df_details):
 # -------------------------------------------------------------
 # 3️⃣ UPSERT MOVIE CREDITS
 # -------------------------------------------------------------
+import json
+from src.utils.db_engine import get_engine
+from src.utils.logger import get_logger
+
+logger = get_logger("load_movie_credits")
+
+
 def upsert_movie_credits(df_credits):
+    """Upsert movie credits into movie_credits table."""
+    
     if df_credits.empty:
-        logger.warning("No credits")
+        logger.warning("No credits to insert")
         return
-
-    logger.info(f"Loading {len(df_credits)} movie credits")
+    
     engine = get_engine()
-
-    with engine.begin() as conn:
+    conn = engine.raw_connection()
+    cursor = conn.cursor()
+    
+    try:
         for _, row in df_credits.iterrows():
-
-            # Clean row (convert lists/dicts → json, NaN → None)
-            data = clean_row(row.to_dict())
-
-            try:
-                conn.execute(
-                    text('''
-                        INSERT INTO movie_credits
-                        (movie_id, movie_cast, movie_crew, last_updated)
-                        VALUES (
-                            :movie_id,
-                            CAST(:movie_cast AS jsonb),
-                            CAST(:movie_crew AS jsonb),
-                            NOW()
-                        )
-                        ON CONFLICT (movie_id) DO UPDATE
-                        SET movie_cast = EXCLUDED.movie_cast,
-                            movie_crew = EXCLUDED.movie_crew,
-                            last_updated = NOW();
-                    '''),
-                    data
-                )
-
-            except Exception as e:
-                # 🔥 DEBUG LOGGING — shows exactly what failed
-                logger.error("❌ FAILED MOVIE CREDIT ROW:")
-                logger.error(json.dumps(data, indent=2))
-                logger.error(f"❌ ERROR MESSAGE: {e}")
-                raise  # rethrow to stop pipeline
-
-    logger.info(f"Successfully inserted {len(df_credits)} movie credits")
+            movie_id = int(row.get("movie_id", 0))
+            movie_cast = json.dumps(row.get("movie_cast", []))
+            movie_crew = json.dumps(row.get("movie_crew", []))
+            
+            cursor.execute("""
+                INSERT INTO movie_credits 
+                (movie_id, movie_cast, movie_crew)
+                VALUES (%s, %s, %s)
+                ON CONFLICT (movie_id)
+                DO UPDATE SET
+                    movie_cast = EXCLUDED.movie_cast,
+                    movie_crew = EXCLUDED.movie_crew,
+                    last_updated = CURRENT_TIMESTAMP;
+            """, (
+                movie_id, movie_cast, movie_crew
+            ))
+        
+        conn.commit()
+        logger.info(f"Successfully inserted {len(df_credits)} movie credits")
+        
+    except Exception as e:
+        logger.error(f"Error inserting movie credits: {e}")
+        conn.rollback()
+        raise
+    finally:
+        cursor.close()
+        conn.close()
