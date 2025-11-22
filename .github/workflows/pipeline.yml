@@ -1,4 +1,5 @@
-name: Daily TMDB ETL Pipeline
+
+name: Daily TMDB Multi-File ETL
 
 on:
   workflow_dispatch:
@@ -10,49 +11,77 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v4
+      - name: Checkout repository
+        uses: actions/checkout@v4
 
-      - name: Create .env
+      - name: Create .env from secrets
         run: |
-          cat > .env << EOL
+          cat > .env <<EOF
           TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}
           PG_USER=${{ secrets.PG_USER }}
           PG_PASSWORD=${{ secrets.PG_PASSWORD }}
           PG_DB=${{ secrets.PG_DB }}
           PG_HOST=postgres
           PG_PORT=5432
-          MAX_PAGES=${{ secrets.MAX_PAGES || 5 }}
+          MAX_PAGES=${{ secrets.MAX_PAGES }}
           SCHEDULE=0
-          GITHUB_ACTIONS=true
-          EOL
+          EOF
+          echo "Created .env:"
+          cat .env
 
-      - name: Build images
+      - name: Show docker compose version
+        run: docker compose version
+
+      - name: Build Docker images (no cache)
         run: docker compose -f docker-compose.ci.yml build --no-cache
 
-      - name: Start PostgreSQL
-        run: docker compose -f docker-compose.ci.yml up -d postgres && sleep 12
+      - name: Run ETL container
+        env:
+          GITHUB_ACTIONS: "true"
+        run: docker compose -f docker-compose.ci.yml up --abort-on-container-exit
 
-      # ⭐ Keep container ALIVE so docker cp works
-      - name: Run ETL inside container
+      - name: Export CSV files from Postgres
+        env:
+          PG_USER: ${{ secrets.PG_USER }}
+          PG_PASSWORD: ${{ secrets.PG_PASSWORD }}
+          PG_DB: ${{ secrets.PG_DB }}
         run: |
-          docker compose -f docker-compose.ci.yml up -d app
-          # Follow logs until ETL finishes
-          docker logs -f tmdb_pipeline_app
+          echo "Containers running:"
+          docker ps -a
 
-      # ⭐ Copy generated CSVs FROM container → to GitHub runner
-      - name: Export CSVs
-        run: |
+          # Use container name directly instead of filtering
+          PG_CONTAINER="imdb_pipeline_postgres"
+          
+          # Verify container exists and is running
+          if ! docker ps --filter "name=$PG_CONTAINER" --format "{{.Names}}" | grep -q "$PG_CONTAINER"; then
+            echo "ERROR: Postgres container not found or not running!"
+            docker ps -a
+            exit 1
+          fi
+          
+          echo "Using Postgres container: $PG_CONTAINER"
           mkdir -p data
-          docker cp tmdb_pipeline_app:/app/data/popular_movies.csv data/popular_movies.csv || true
-          docker cp tmdb_pipeline_app:/app/data/movie_details.csv data/movie_details.csv || true
-          docker cp tmdb_pipeline_app:/app/data/movie_credits.csv data/movie_credits.csv || true
 
-      # ⭐ Auto-commit CSV changes back to repo
-      - uses: stefanzweifel/git-auto-commit-action@v4
+          # Export with proper error handling
+          echo "Exporting popular_movies..."
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY popular_movies TO STDOUT CSV HEADER;" > data/popular_movies.csv || echo "Warning: popular_movies export failed or table empty"
+
+          echo "Exporting movie_details..."
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_details TO STDOUT CSV HEADER;" > data/movie_details.csv || echo "Warning: movie_details export failed or table empty"
+
+          echo "Exporting movie_credits..."
+          docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "\COPY movie_credits TO STDOUT CSV HEADER;" > data/movie_credits.csv || echo "Warning: movie_credits export failed or table empty"
+
+          echo "CSV files created:"
+          ls -lh data/ || echo "No data directory"
+
+      - name: Commit updated CSVs
+        uses: stefanzweifel/git-auto-commit-action@v4
         with:
-          file_pattern: "data/*.csv"
-          commit_message: "chore: Update TMDB CSV exports [skip ci]"
+          file_pattern: data/*.csv
+          commit_message: "Update TMDB CSV files"
+          branch: main
 
-      - name: Cleanup
+      - name: Tear down containers
         if: always()
-        run: docker compose -f docker-compose.ci.yml down -v
+        run: docker compose -f docker-compose.ci.yml down --volumes
