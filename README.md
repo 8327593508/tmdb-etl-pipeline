@@ -380,4 +380,3 @@ For questions or support, please open an issue in the repository.
 
 ---
 
-**Made with ❤️ for data enthusiasts**
