@@ -288,6 +288,11 @@ Example visualizations:
 - **Table**: Top rated movies with details
 - **Map**: Production countries
 
+  ### Dashboard Overview
+  
+  <img width="1325" height="746" alt="image" src="https://github.com/user-attachments/assets/faf24a0e-6d0b-47d0-8af3-b9e9ec5a7a9d" />
+
+
 ## 🔄 GitHub Actions Automation
 
 The pipeline runs automatically via GitHub Actions:
